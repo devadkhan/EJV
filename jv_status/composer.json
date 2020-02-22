@@ -1,0 +1,14 @@
+{
+  "name": "drupal/jv_status",
+  "type": "drupal-module",
+  "description": "Module for controling jv status",
+  "keywords": ["Drupal"],
+  "license": "GPL-2.0+",
+  "homepage": "https://www.drupal.org/project/jv_status",
+  "minimum-stability": "dev",
+  "support": {
+    "issues": "https://www.drupal.org/project/issues/jv_status",
+    "source": "http://cgit.drupalcode.org/jv_status"
+  },
+  "require": { }
+}

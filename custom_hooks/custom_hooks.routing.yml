@@ -1,0 +1,30 @@
+custom_hooks.otp:
+  path: '/user/otp'
+  defaults:
+    _form: '\Drupal\custom_hooks\Form\Otp'
+    _title: ''
+  requirements:
+    _role: 'anonymous' 
+custom_hooks.otpOne:
+  path: '/user/otpOne'
+  defaults:
+    _controller: '\Drupal\custom_hooks\Controller\Otp::otpOne'
+    _title: 'Enter Login OTP One'
+  requirements:
+    _permission: 'access content' 
+custom_hooks.taxonomy_list_controller_getTaxonomyList:
+  path: '/data/getTaxonomyList'
+  defaults:
+    _controller: '\Drupal\custom_hooks\Controller\TaxonomyListController::getTaxonomyList'
+    _title: 'getTaxonomyList'
+  requirements:
+    _permission: 'access content'
+custom_hooks.email_domain_restrcition_form:
+  path: '/admin/config/emaildomainrestriction'
+  defaults:
+    _form: '\Drupal\custom_hooks\Form\EmailDomainRestrcitionForm'
+    _title: 'EmailDomainRestrcitionForm'
+  requirements:
+    _permission: 'access administration pages'
+  options:
+    _admin_route: TRUE

@@ -1,0 +1,5 @@
+name: 'JV Status'
+type: module
+description: 'Module for controling jv status'
+core: 8.x
+package: 'Custom'

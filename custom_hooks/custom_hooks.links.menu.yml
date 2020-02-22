@@ -1,0 +1,6 @@
+custom_hooks.email_domain_restrcition_form:
+  title: 'EmailDomainRestrcitionForm'
+  route_name: custom_hooks.email_domain_restrcition_form
+  description: 'Email domain restriction list'
+  parent: system.admin_config_system
+  weight: 99

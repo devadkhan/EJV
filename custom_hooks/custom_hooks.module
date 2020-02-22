@@ -1,0 +1,1259 @@
+<?php
+
+use Drupal\Core\Entity\Plugin\DataType\EntityReference;
+use \Drupal\Core\Form\FormStateInterface;
+use Drupal\node\Entity\Node;
+use Drupal\Core\Entity\EntityInterface;
+use Drupal\Core\Database\Database;
+use \Drupal\Core\Database\Schema;
+use Drupal\Component\Utility\SafeMarkup;
+use \Drupal\user\Entity\User;
+use \Drupal\Core\Url;
+use Drupal\views\Views;
+use Drupal\Core\Ajax\AjaxResponse;
+use Drupal\Core\Ajax\InsertCommand;
+use Drupal\Core\Ajax\AlertCommand;
+use Drupal\Component\Datetime\DateTimePlus;
+use Drupal\Core\Session\AccountInterface;
+use Drupal\Core\Access\AccessResult;
+use Drupal\node\NodeInterface;
+use Drupal\Component\Utility\Html;
+use Symfony\Component\HttpFoundation\RedirectResponse;
+
+
+use Drupal\views\ViewExecutable;
+use Drupal\views\ViewsData;
+use Drupal\views\ResultRow;
+use Drupal\views\Plugin\views\cache\CachePluginBase;
+use Drupal\views\Plugin\views\query\QueryPluginBase;
+
+use Drupal\Core\Ajax\PrependCommand;
+use Drupal\Core\Ajax\ReplaceCommand;
+
+use CommerceGuys\Addressing\Subdivision\SubdivisionRepository;
+
+function get_emaildomainrestrcition_list()
+{
+    $emailDomainRestrictionConfig = \Drupal::config("custom_hooks.emaildomainrestrcition");;
+    $domain_list = $emailDomainRestrictionConfig->get('domain_list');
+    $domain_list = explode("\n", $domain_list);
+    //filter list
+    $domain_list = array_reduce($domain_list, function($ac, $v){
+        $v = trim($v);
+        if($v!="")
+        {
+            $ac[] = $v;
+        }
+        return $ac;
+    }, []);
+    return $domain_list;
+}
+
+function get_emaildomainrestrcition_list_regex()
+{
+    $domain_list = get_emaildomainrestrcition_list();
+    $regex = "/";
+    foreach($domain_list as $key=>$domain)
+    {
+        $regex .= "($domain)";
+        if($key<count($domain_list)-1)
+        {
+            $regex .= "|";
+        }
+    }
+    $regex .= "^/i";
+    return $regex;
+}
+
+/**
+* implements hook_page_attachments()
+*/
+function custom_hooks_page_attachments(array &$attachments) {
+    $attachments['#attached']['drupalSettings']['custom_hooks']['emaildomainrestrcition']['domain_list'] = get_emaildomainrestrcition_list();
+    $params = \Drupal::routeMatch()->getParameters();
+
+    $user = $params->get("user");
+    if($user)
+    {
+        if($v = $user->field_new_signup->getValue()){
+            $attachments['#attached']['drupalSettings']['current_path_user']['field_new_signup'] = $v[0]['value'];
+        }
+    }
+
+}
+
+function custom_hooks_entity_access(\Drupal\Core\Entity\EntityInterface $entity, $operation, \Drupal\Core\Session\AccountInterface $account) {
+
+    if($operation == 'update' && $entity->getEntityTypeId() == 'user')
+    {
+        if($entity->id() != $account->id() && array_search("site_ad", $account->getRoles()) !== false && array_search("government", $entity->getRoles()) === false )
+        {
+            return AccessResult::forbidden();
+        }
+    }
+
+    return AccessResult::neutral();
+}
+
+
+function custom_hooks_menu_local_tasks_alter(&$data, $route_name) {
+
+}
+
+
+/**
+* Implementation of hook_element_info_alter ()
+*/
+function custom_hooks_element_info_alter (& $type){
+    if (isset($type['password_confirm']['#process'])) {
+        $func = '_custom_hooks_process_password_confirm';
+
+        $type['password_confirm']['#process'][] = $func;
+    }
+    return $type;
+}
+
+/**
+ * Do a bit of processing for the password_confirm element.
+ * Original processing happens in expand_password_confirm()
+ */
+function _custom_hooks_process_password_confirm ($element){
+    $element['pass1']['#attributes']['placeholder'] = t('@Password');
+    $element['pass2']['#attributes']['placeholder'] = t('@Confirm password');
+    return $element;
+}
+
+/**
+ * Implements hook_user_login().
+ */
+function custom_hooks_user_login($account) {
+    $roles = $account->getRoles();
+    if(count($roles) == 1 && $roles[0] == 'authenticated'){
+        drupal_set_message(t('FYI, you cannot create proposals untill your account will be approved by EJV Administrator.'), 'status', FALSE);
+    }
+}
+
+/**
+ * Implements hook_form_FORM_ID_alter().
+ *
+ * Turn off autocomplete on key forms.
+
+function custom_hooks_form_user_login_form_alter(&$form, FormStateInterface $form_state, $form_id) {
+  // Adding cache tags.
+  $form['name']['#cache']['keys'][] = 'no_autocomplete';
+  // Add to the user_login.
+  $form['pass']['#attributes']['autocomplete'] = 'off';
+}*/
+
+/**
+ * Implements hook_preprocess_HOOK().
+ *
+ * @param $variables
+ */
+function custom_hooks_preprocess_status_messages(&$variables) {
+    if(isset($variables['message_list']['status'])){
+        $status_messages = $variables['message_list']['status'];
+        foreach($status_messages as $delta => $message) {
+            $user = \Drupal::currentUser()->getRoles();
+            if(in_array('site_ad', $user)){
+                if (strpos((string) $message, 'Created new term') !== FALSE) {
+                    $variables['message_list']['status'][$delta] = "New item has been added successfully.";
+                }elseif (strpos((string) $message, 'Updated term') !== FALSE) {
+                    $variables['message_list']['status'][$delta] = "Changes has been saved successfully.";
+                }elseif (strpos((string) $message, 'Deleted term') !== FALSE) {
+                    $variables['message_list']['status'][$delta] = "Item has been deleted successfully.";
+                }
+            }
+            if (strpos((string) $message, '1 user saved.') !== FALSE) {
+                $variables['message_list']['status'][$delta] = "Company profile updated successfully.";
+            }if (strpos((string) $message, 'content items saved.') !== FALSE || strpos((string) $message, 'content item saved.') !== FALSE) {
+                $variables['message_list']['status'][$delta] = "Changes has been saved successfully.";
+            }if (strpos((string) $message, 'You have just used your one-time login link. It is no longer necessary to use this link to log in. Please change your password.') !== FALSE) {
+                $variables['message_list']['status'][$delta] = "You have just used your one-time login link. It is no longer necessary to use this link to log in.";
+            }
+        }
+    }
+}
+
+/**
+ * Implements hook_ENTITY_TYPE_view().
+ * ENTITY_TYPE = node
+*/
+function custom_hooks_node_view(array &$build, \Drupal\Core\Entity\EntityInterface $entity, \Drupal\Core\Entity\Display\EntityViewDisplayInterface $display, $view_mode) {
+    $type = $entity->getType();
+    if($type == 'proposal'){
+        $build['#cache']['max-age'] = 0;
+        $defaultStatus = (isset($entity->get('moderation_state')->getValue()[0])) ? $entity->get('moderation_state')->getValue()[0]['value'] : '' ;
+        $roles = \Drupal::currentUser()->getRoles();
+        if(count($roles) == 1 && $roles[0] == 'authenticated'){
+            drupal_set_message('You cannot send JV request untill your account will be approved by EJV Administrator.', 'warning', false);
+        }
+    }
+}
+
+function custom_hooks_form_alter(&$form, $form_state, $form_id) {
+    //    kint($form_id);
+
+    if($form_id =='taxonomy_term_sub_department_form')
+    {  
+        if ($form_state->getFormObject()->getEntity()->isNew() == false) {
+            $form['#attributes']['class'] = 'sub-deptt-edit';
+
+        } elseif ($form_state->getFormObject()->getEntity()->isNew() == true) {
+            $form['#attributes']['class'] = 'sub-deptt-add';
+            //       $form['field_select_department']['#required'] = false;
+            $form['field_select_department']['widget']['#required'] = TRUE; 
+
+        }
+
+    }
+
+    //  $users = \Drupal::entityTypeManager()->getStorage('user')->loadByProperties(['field_department'=>300]);
+    //  foreach($users as $user)
+    //  {
+    //    kint($user->id());
+    //    kint($user->field_sub_department->getValue());
+    //  }
+    //  kint($users);
+
+
+    //  $user = \Drupal::entityTypeManager()->getStorage('user')->loadByProperties(['field_department'=> 300, 'field_sub_department'=>301]);
+    //'field_sub_department'
+    //  $user[220]->block();
+    //  $user[220]->save();
+    //  kint($user);
+
+    //  exit; 
+    global $base_url;
+    if($form_id == 'comment_comment_form'){
+        $form['field_comments']['widget']['0']['value']['#attributes']['placeholder'] = t('Type you message here ...');
+    }elseif($form_id == 'taxonomy_overview_vocabularies'){
+        $user = \Drupal::currentUser()->getRoles();
+        if(in_array('site_ad', $user)){
+            $form['vocabularies']['#header']['label'] = t('Category Name');
+        }
+    }elseif(strpos($form_id, 'taxonomy_term') === 0 && strrpos($form_id, '_delete_form') > 0){
+        $user = \Drupal::currentUser()->getRoles();
+        if(in_array('site_ad', $user)){
+            $termName = $form_state->getBuildInfo()['callback_object']->getEntity()->getName();
+            $formTitle = 'Are you sure you want to delete <i>"'.$termName.'"</i>.';
+            $form['#title'] = t($formTitle);
+            $form['description']['#markup'] = '';
+        }
+    }elseif(strpos($form_id, 'views_form_jv_status_page_') === 0){
+        //$form['actions']['submit']['#submit'][] =  '_redirection_to_jv_status';
+    }elseif(strpos($form_id, 'views_form_company_profile_page_') === 0){
+        $form['#submit'][] = '_redirection_to_company_profile';
+    }elseif($form_id == 'node_proposal_form'){
+        $form['title']['widget'][0]['value']['#title'] = t('Project Name');
+        $form['title']['widget'][0]['value']['#attributes']['placeholder'] = t('Project Name');
+        $form['actions']['submit']['#value'] = 'Submit';
+        $form['actions']['submit']['#submit'][] =  '_redirection_to_proposal_project';
+    }elseif($form_id == 'user_form'){
+        $user = \Drupal::currentUser()->getRoles();
+        $formUid = $form_state->getBuildInfo()['callback_object']->getEntity()->id();
+        if(in_array('site_ad', $user) && \Drupal::currentUser()->id() == $formUid){
+            $form['account']['status']['#prefix'] = '<div class="hide">';
+            $form['account']['status']['#suffix'] = '</div>';
+            $form['account']['roles']['#prefix'] = '<div class="hide">';
+            $form['account']['roles']['#suffix'] = '</div>';
+        }elseif(in_array('site_ad', $user)){
+            $entityRoles = $form_state->getBuildInfo()['callback_object']->getEntity()->getRoles();
+            $entityRoles = end($entityRoles);
+            $form['account']['status']['#type'] = 'select';
+            $roless = ['permanent' => 'Private', 'government' => 'Government'];
+            $defalutRole = '';
+            if(array_key_exists($entityRoles, $roless)){
+                $roles = [$entityRoles => ($entityRoles == 'permanent') ? 'Private' : 'Government'];
+                $defalutRole = $entityRoles;
+            }
+            if(isset($roles)){
+                $form['account']['roles']['#options'] = $roles;
+                $form['account']['roles']['#prefix'] = '<div class="hide">';
+                $form['account']['roles']['#suffix'] = '</div>';
+                $form['account']['custom_roles'] = [
+                    '#type' => 'radios',
+                    '#title' => t('Role'),
+                    '#default_value' => $defalutRole,
+                    '#options' => $roles
+                ];
+                if(isset($roles['government'])){
+                    $form['field_department']['widget']['#ajax'] = [
+                        'callback' => '_get_field_form_siteadmin',
+                        'event' => 'change',
+                        'wrapper' => 'msg-div',
+                        'method' => 'replace',
+                        'effect' => 'fade',
+                    ];
+                    if(isset($form['field_department']['widget']['#default_value']) && empty($form['field_department']['widget']['#default_value'])){
+                        $form['field_full_name']['widget']['#required'] = false;
+                        if(isset($form['field_full_name']['widget'][0])){
+                            $form['field_full_name']['widget'][0]['#required'] = false;
+                            $form['field_full_name']['widget'][0]['value']['#required'] = false;
+                        }
+                        $form['field_contact_number']['widget']['#required'] = false;
+                        if(isset($form['field_contact_number']['widget'][0])){
+                            $form['field_contact_number']['widget'][0]['#required'] = false;
+                            $form['field_contact_number']['widget'][0]['value']['#required'] = false;
+                        }
+                        $form['field_full_name']['#prefix'] = '<div class="hide">';
+                        $form['field_full_name']['#suffix'] = '</div>';
+                        $form['field_contact_number']['#prefix'] = '<div class="hide">';
+                        $form['field_contact_number']['#suffix'] = '</div>';
+                    }
+                    $form['actions']['submit']['#submit'][] = '_assign_role_by_siteadmin';
+                }else{
+                    unset($form['field_department']);
+                    unset($form['field_sub_department']);
+                }
+            }
+        }
+    }elseif($form_id == 'user_register_form'){
+        $form['account']['mail']['#attributes']['placeholder'] = t('@Email address');
+        $form['account']['name']['#attributes']['placeholder'] = t('@Username');
+        $user = \Drupal::currentUser()->getRoles();
+        if(in_array('site_ad', $user)){
+            $roles = ['government' => 'Government'];
+            $form['account']['roles']['#options'] = $roles;
+            $form['account']['roles']['#default_value'] = ['government'];
+            $form['account']['roles']['#prefix'] = '<div class="hide">';
+            $form['account']['roles']['#suffix'] = '</div>';
+            $form['account']['notify']['#default_value'] = true;
+            $form['account']['notify']['#prefix'] = '<div class="hide">';
+            $form['account']['notify']['#suffix'] = '</div>';
+            $form['account']['status']['#type'] = 'select';
+            $form['field_contact_number']['widget'][0]['value']['#attributes']['maxlength'] = 20;
+            //      $form['abc'] = ['#weight'=>-1,'#markup' => t('<h3 class="col-md-12">Add Focal Person Detail Heading</h3>')];
+            //      kint($form);
+            //      kint(array_keys($form));
+            //      array_splice($form, array_search('field_contact_number', array_keys($form)), 0, ['abc'=>['#weight'=>0,'#markup' => t('<h3 class="col-md-12">Add Focal Person Detail Heading</h3>')]]);
+            @$form['field_full_name']['#prefix'] .= '<div class="row"><h3 class="col-md-12">Add Focal Person</h3></div>';
+            //            kint(array_keys($a));
+            //      kint($form);
+            //      exit;
+        }elseif (in_array('anonymous', $user)) {
+            /*$subdivisionRepository = new SubdivisionRepository();
+      $countries = \Drupal::service('country_manager')->getList();
+      //kint($countries);
+      $countriesList = [];
+      $countriesLists = '';
+      foreach ($countries as $key => $value) {
+        $countriesList[$key] = $value->getUntranslatedString();
+        $countriesLists .= $key.'|'.$value->getUntranslatedString().'<br>';
+      }
+      echo "<pre>"; print_r($countriesLists);exit;
+      kint($countriesList);exit;
+      $form['field_export_destinations']['#options'] = $countriesList;
+      $form['field_export_destinations']['widget']['#options'] = $countriesList;*/
+            $form['actions']['submit']['#submit'][] = '_custom_assign_role_to_anonymous';
+        }
+        $form['field_contact_number']['widget'][0]['value']['#attributes']['maxlength'] = 20;
+        $form['field_company_phone_number']['widget'][0]['value']['#attributes']['maxlength'] = 20;
+        $form['field_fax_number']['widget'][0]['value']['#attributes']['maxlength'] = 20;
+        $form['field_company_fax_number']['widget'][0]['value']['#attributes']['maxlength'] = 20;
+        array_unshift($form['#validate'], '_custom_register_validation');
+    }elseif($form_id == 'user_login_form'){
+        $form['name']['#attributes'] = array(
+            'placeholder' => array (
+                t('@user Name')
+            )
+        );
+        $form['pass']['#attributes'] = array(
+            'placeholder' => array (
+                t('******')
+            )
+        );
+        $form['#prefix'] = '<div class="col-md-5 col-sm-12"> <div class="inc-db-login">';
+
+        $form['val_pas'] = array(
+            '#markup' => ''.t('').''.'<a href="'.$base_url.'/user/password" class="forget-password">'.t('Forgot Password?').'</a>',
+            '#weight' =>'10',
+        );
+        $form['acount'] = array(
+            '#markup' => '<p class="have_account">'.t('Dont have a account?').''.'<a href="'.$base_url.'/user/register" class="">'.t('Click Here').'</a></p>',
+            '#weight' =>'100',
+        );
+        $form['#suffix'] = '</div></div>';
+        $form['actions']['submit']['#value'] = t('Login');
+        unset($form['actions']['submit']['#submit']);
+        $form['actions']['submit']['#submit'][] = 'custom_login_handler';
+
+    }elseif($form_id == 'user_pass'){
+        $form['#prefix'] = '<div class="col-md-5 col-sm-12"> <div class="inc-db-login">';
+        $form['#suffix'] = '</div></div>';
+
+
+    }elseif($form_id == 'change_pwd_form'){
+        //kint($form);exit;
+
+        //echo "<pre>";print_r(array_keys($form['account']));exit;
+        $form['account']['current_pass']['#placeholder'] = array (
+            t('@CurrentPassword')
+        );
+        $form['actions']['submit']['#value'] = t('Update');
+    }elseif($form_id == 'taxonomy_overview_vocabularies'){
+        //unset($form['description']);
+        //echo '<pre>'; kint($form);exit;
+        $user = \Drupal::currentUser()->getRoles();
+        // echo '<pre>'; print_r($user);exit;
+        $form['#prefix'] = '<div class="remove-drag">';
+        $form['#suffix'] = '</div> </div>';
+        if(in_array("site_ad", $user)){
+            $vocNames = taxonomy_vocabulary_get_names();
+            // echo '<pre>'; print_r($user);exit;
+            foreach($vocNames as $voc){
+                if(isset($form['vocabularies'][$voc])){
+                    //echo '<pre>'; print_r($form['vocabularies'][$voc]['operations']['data']['#links']['add']['title']);exit;
+                    $vocName = ucwords(str_replace('_', ' ', $voc));
+                    //$title = $form['vocabularies'][$voc]['operations']['data']['#links']['list']['title']->getUntranslatedString();
+                    $form['vocabularies'][$voc]['operations']['data']['#links']['list']['title'] = 'List '.$vocName;
+                    $form['vocabularies'][$voc]['operations']['data']['#links']['add']['title'] = 'Add '.$vocName;
+                }
+            }
+        }
+    }elseif(strpos($form_id, 'taxonomy_term') && strripos($form_id, 'delete_form')){
+        //exit;
+    }elseif($form_id == 'user_cancel_form'){
+        unset($form['description']);
+    }
+    elseif($form_id == 'user_pass_reset'){
+        //$form['#submit'][] = '_reset_password_reset_messages';
+        array_unshift($form['#submit'], '_assign_new_pass');
+        $form['#title'] = '';
+        unset($form['help']['#markup'], $form['message']['#markup']);
+        //kint($form);exit;
+        //$form['actions']['submit']['#submit'] = [];
+        //array_unshift($form['actions']['submit']['#submit'], '_assign_new_pass');
+    }elseif($form['#id'] == 'views-exposed-form-proposal-project-page-2') {
+        $form['field_country_value']['#options']['All'] = t('Select Country');
+        $form['field_industry_sectors_where_col_target_id']['#options']['All'] = t('Select Sector');
+        //kint($form['field_country_value']);exit
+
+    }elseif($form['#id'] == 'views-exposed-form-jv-status-page-1') {
+        $form['field_send_receive_value']['#options']['All'] = t('All');
+
+    }elseif($form['#id'] == 'views-exposed-form-admin-dashboard-page-3') {
+        $form['field_industry_sectors_where_col_target_id']['#options']['All'] = t('All Sector');
+
+    }elseif($form['#id'] == 'views-exposed-form-admin-dashboard-page-3') {
+        $form['field_proposal_status_value_1']['#options']['All'] = t('All');
+
+    }elseif($form['#id'] == 'views-exposed-form-admin-dashboard-page-4') {
+        $form['field_industry_sectors_where_col_target_id']['#options']['All'] = t('All Sector');
+
+    }elseif($form['#id'] == 'views-exposed-form-admin-dashboard-page-5') {
+        $form['field_industry_sectors_where_col_target_id']['#options']['All'] = t('All Sector');
+
+    }elseif($form['#id'] == 'views-exposed-form-admin-dashboard-page-6') {
+        $form['field_industry_sectors_where_col_target_id']['#options']['All'] = t('All Sector');
+
+    }elseif($form['#id'] == 'views-exposed-form-admin-dashboard-page-2') {
+        $form['field_industry_sectors_where_col_target_id']['#options']['All'] = t('All Sector');
+
+    }elseif($form['#id'] == 'views-exposed-form-admin-dashboard-page-1') {
+        $form['field_industry_sectors_where_col_target_id']['#options']['All'] = t('All');
+
+    }elseif($form['#id'] == 'views-exposed-form-all-departments-page-1') {
+        $form['status']['#options']['All'] = t('All');
+        $form['status']['#options'][1] = t('Active');
+        $form['status']['#options'][0] = t('Block');
+    }elseif($form['#id'] == 'views-exposed-form-site-admin-users-page-1') {
+        $form['status']['#options']['All'] = t('All');
+        $form['status']['#options'][1] = t('Active');
+        $form['status']['#options'][0] = t('Block');
+
+    }
+}
+
+function custom_hooks_user_insert($user)
+{
+    //    $d = $user->get('field_jso')->getValue();
+    //    if(!$d)
+    //    {
+    //        return;
+    //    }
+    //    $dd = $d[0]['value'];
+    //    $json = json_decode($dd, true);
+    //    if(isset($json['city']) && $city = $json['city'])
+    //    {
+    //        //check  taxonomy exists
+    //        $city_term = \Drupal\taxonomy\Entity\Term::load($city);
+    //        if($city_term)
+    //        {
+    //            $user->set('field_city', $city);
+    //            $user->set('field_jso', '');
+    //            $user->save();
+    //        }
+    //    }
+}
+
+/**
+* @function: _get_field_form_siteadmin
+*/
+function _get_field_form_siteadmin(array &$form, FormStateInterface $form_state){
+    if(isset($form_state->getValues()['field_department'][0])){
+        //drupal_set_message(t('You in'), 'status', FALSE);
+        unset($form['field_full_name']['#prefix']);
+        unset($form['field_full_name']['#suffix']);
+        unset($form['field_contact_number']['#prefix']);
+        unset($form['field_contact_number']['#suffix']);
+        $form['field_full_name']['widget']['#required'] = true;
+        if(isset($form['field_full_name']['widget'][0])){
+            $form['field_full_name']['widget'][0]['#required'] = true;
+            $form['field_full_name']['widget'][0]['value']['#required'] = true;
+        }
+        $form['field_contact_number']['widget']['#required'] = true;
+        if(isset($form['field_contact_number']['widget'][0])){
+            $form['field_contact_number']['widget'][0]['#required'] = true;
+            $form['field_contact_number']['widget'][0]['value']['#required'] = true;
+        }
+    }else{
+        //drupal_set_message(t('You out'), 'status', FALSE);
+        $form['field_full_name']['widget']['#required'] = false;
+        if(isset($form['field_full_name']['widget'][0])){
+            $form['field_full_name']['widget'][0]['#required'] = false;
+            $form['field_full_name']['widget'][0]['value']['#required'] = false;
+        }
+        $form['field_contact_number']['widget']['#required'] = false;
+        if(isset($form['field_contact_number']['widget'][0])){
+            $form['field_contact_number']['widget'][0]['#required'] = false;
+            $form['field_contact_number']['widget'][0]['value']['#required'] = false;
+        }
+        $form['field_full_name']['#prefix'] = '<div class="hide">';
+        $form['field_full_name']['#suffix'] = '</div>';
+        $form['field_contact_number']['#prefix'] = '<div class="hide">';
+        $form['field_contact_number']['#suffix'] = '</div>';
+    }
+    $response = new AjaxResponse();
+    /*$status_messages = array('#type' => 'status_messages');
+  $messages = \Drupal::service('renderer')->renderRoot($status_messages);
+  $response->addCommand(new ReplaceCommand('div .messages__wrapper', ''));
+  $response->addCommand(new PrependCommand('body', $messages));*/
+    $response->addCommand(new ReplaceCommand('[id^="user-form"]', $form));
+
+    return $response;
+}
+
+/**
+* @function: _custom_assign_role_to_anonymous
+*/
+function _custom_assign_role_to_anonymous(&$form, FormStateInterface $form_state){
+    $uid = $form_state->getValues()['uid'];
+    $account = \Drupal\user\Entity\User::load($uid);
+    //$account->addRole('permanent');
+    $account->set('field_new_signup', 'New');
+    //kint($account);exit;
+    $account->save();
+}
+
+/**
+* @function: _custom_register_validation
+*/
+function _custom_register_validation(&$form, FormStateInterface $form_state){
+    //kint($form_state->getValues());exit;
+    if ($form_state->getValues()['field_is_company_oprate_in_pakis'][0]) {
+        $isComInPk = $form_state->getValues()['field_is_company_oprate_in_pakis'][0]['value'];
+        if($isComInPk == 'No'){
+            $form['field_ntn_number']['widget'][0]['#required'] = false;
+        }
+    }
+}
+
+/**
+* @function: _redirection_to_company_profile
+*/
+function _redirection_to_company_profile(&$form, FormStateInterface $form_state){
+    //drupal_set_message(t('Company Profile has been updated successfully.'), 'status', FALSE);
+    $form_state->setRedirect("view.company_profile.page_1");
+}
+
+/**
+* @function: _redirection_to_proposal_project
+*/
+function _redirection_to_proposal_project(&$form, FormStateInterface $form_state){
+    $form_state->setRedirect("view.proposal_project.page_1");
+    $role = \Drupal::currentUser()->getRoles();
+    if(isset($role[0]) && array_search('permanent', $role) !== FALSE){
+    }
+}
+
+function _assign_new_pass(array $form, FormStateInterface $form_state) {
+    $newPass = $form_state->getValues()['pass'];
+    $uid = $form_state->getValues()['user']->id();
+    // Get user storage object.
+    $user_storage = \Drupal::entityManager()->getStorage('user');
+    //kint($user_storage);
+    // Load user by their user ID
+    $user = $user_storage->load($uid);
+    //kint($user);exit;
+    // Set the new password
+    $user->setPassword($newPass);
+    // Save the user
+    $user->save();
+    $abc = drupal_get_messages('status', TRUE);
+    drupal_set_message(t('Password has been set successfully.'), 'status', false);
+    //kint($abc);exit;
+}
+
+function _assign_role_by_siteadmin(array $form, FormStateInterface $form_state) {
+    $role = $form_state->getValues()['custom_roles'];
+    if(!empty($role)){
+        $uid = $form_state->getValues()['uid'];
+        $account = \Drupal\user\Entity\User::load($uid);
+        $roles = ['permanent', 'government'];
+        foreach ($roles as $key => $rid) {
+            $account->removeRole($rid);
+        }
+        $account->addRole($role);
+        $account->save();
+    }
+}
+
+function _reset_password_reset_messages(array $form, FormStateInterface $form_state) {
+    $abc = drupal_get_messages('status', TRUE);
+    //	kint($abc);exit;
+}
+
+/**
+ * Implements hook_form_FORM_ID_alter().
+ */
+// function custom_hooks_form_ user_register_form_alter(&$form, \Drupal\Core\Form\FormStateInterface $form_state, $form_id) {
+//   $form['account']['name']['#title'] = t('First and last name');
+//   $form['account']['name']['#description'] = t("Rewrite this about spaces, periods (.), hyphens (-) and apostrophes (').");
+// }
+
+
+function custom_login_handler(&$form, FormStateInterface $form_state){
+    //kint($form_state);exit;
+    global $user;
+    $otp = $num = str_pad(rand(0,9999),4,'0',STR_PAD_LEFT);
+    $session = \Drupal::request()->getSession();
+    /**** SET SESSION ****/
+    $session->set('otp', 1234);
+    //echo "<pre>"; print_r($session->get('otp'));exit;
+    $name = $form_state->getValue("name");
+    $user = user_load_by_name($name);
+    $session->set('session-name', $name);
+    $email = $user->getEmail();
+    $id = $user->id();
+    $session->set('login-id', $id);
+    $session->set('login-email', $email);
+    //kint($Id); exit;
+    $arr = array('name' => $name, 'email' => $email, 'otp' => $otp);
+    //sendEmail($name,$email,$otp);
+    sendEmail($arr, 'user_login_opt');
+    $form_state->setRedirect('custom_hooks.otp');
+    //$submit_message = "Note Edited Successfully";
+    //drupal_set_message($submit_message);
+    //$form_state->setRebuild(TRUE);
+}
+function sendEmail($arr, $type){
+    switch ($type) {
+        case 'user_login_opt':
+            $username = $arr['name'];
+            $email = $arr['email'];
+            $otp = $arr['otp'];
+            $mailManager = \Drupal::service('plugin.manager.mail');
+            $module = 'custom_hooks';
+            $key = 'sending_email_to_user';
+            $to = $email;
+            $text = t('Dear "'.$username.'" Please use the OTP to Login the website"'.$otp.'"');
+            $params['message'] = $text;
+            $params['subject'] = 'Electronic Joint Venture | One Time Password (OTP) for Login';
+            $params['headers'] = 'text/html';
+            $langcode = \Drupal::currentUser()->getPreferredLangcode();
+            $send = true;
+            $result = $mailManager->mail($module, $key, $to, $langcode, $params, NULL, $send);
+            break;
+
+        case 'mail_to_Pauthor_sending_jv':
+            //$arr = array('name' => $pauthor_name, 'pauthor_email' => $email, 'jauthor_name' => $jv_author_name , 'p_title' => $proposal_title);
+            $username = $arr['name'];
+            $email = $arr['pauthor_email'];
+            $jauthor_name = $arr['jauthor_name'];
+            $p_title = $arr['p_title'];
+            $mailManager = \Drupal::service('plugin.manager.mail');
+            $module = 'custom_hooks';
+            $key = 'mail_to_Pauthor_sending_jv';
+            $to = $email;
+            $text = t('Dear "'.$username.'", you have received JV Request on your "'.$p_title.'"proposal by "'.$jauthor_name.'".');
+            $params['message'] = $text;
+            $params['subject'] = 'Electronic Joint Venture | JV REQUEST';
+            $params['headers'] = 'text/html';
+            $langcode = \Drupal::currentUser()->getPreferredLangcode();
+            $send = true;
+            //kint($mailManager);exit;
+            $result = $mailManager->mail($module, $key, $to, $langcode, $params, NULL, $send);
+            break;
+
+        case 'send_mail_jv_author':
+            //$arr = array('jv_author_email' => $jv_author_email, 'proposal_title' => $proposal_title, 'status' => $final_value);
+            $email = $arr['jv_author_email'];
+            $name = $arr['jvauthor_name'];
+            $proposal_title = $arr['proposal_title'];
+            $status = $arr['status'];
+
+            $mailManager = \Drupal::service('plugin.manager.mail');
+            $module = 'custom_hooks';
+            $key = 'send_mail_jv_author';
+            $to = $email;
+            $text = t('Dear "'.$name.'", P Author has change the status to "'.$status.'".');
+            //$text = t('Dear "'.$name.'" JV author has change the status"'.$status.'"');
+            $params['message'] = $text;
+            $params['subject'] = 'Electronic Joint Venture | Proposal Discussion';
+            $params['headers'] = 'text/html';
+            $langcode = \Drupal::currentUser()->getPreferredLangcode();
+            $send = true;
+            $result = $mailManager->mail($module, $key, $to, $langcode, $params, NULL, $send);
+            break;
+
+        case 'send_mail_p_author':
+            //$arr = array('jv_author_email' => $jv_author_email, 'proposal_title' => $proposal_title, 'status' => $final_value);
+            $email = $arr['pauthor_email'];
+            $name = $arr['pauthor_name'];
+            $proposal_title = $arr['proposal_title'];
+            $status = $arr['status'];
+
+            $mailManager = \Drupal::service('plugin.manager.mail');
+            $module = 'custom_hooks';
+            $key = 'send_mail_p_author';
+            $to = $email;
+            $text = t('Dear "'.$name.'", JV Author has change the status to "'.$status.'".');
+            $params['message'] = $text;
+            $params['subject'] = 'Electronic Joint Venture | Proposal Discussion';
+            $params['headers'] = 'text/html';
+            $langcode = \Drupal::currentUser()->getPreferredLangcode();
+            $send = true;
+            $result = $mailManager->mail($module, $key, $to, $langcode, $params, NULL, $send);
+            break;
+
+        default:
+            # code...
+            break;
+    }
+
+}
+/**
+* Implements hook_mail().
+*/
+
+function custom_hooks_mail($key, &$message, $params) {
+    $options = array(
+        'langcode' => $message['langcode'],
+    );
+    switch ($key) {
+        case 'sending_email_to_user':
+            $message['from'] = \Drupal::config('system.site')->get('mail');
+            $message['subject'] = t('@title', array('@title' => $params['subject']), $options);
+            $message['body'][] = $params['message'];
+            break;
+
+        case 'send_mail_jv_author':
+            $message['from'] = \Drupal::config('system.site')->get('mail');
+            $message['subject'] = t('@title', array('@title' => $params['subject']), $options);
+            $message['body'][] = $params['message'];
+            break;
+
+        case 'send_mail_p_author':
+            $message['from'] = \Drupal::config('system.site')->get('mail');
+            $message['subject'] = t('@title', array('@title' => $params['subject']), $options);
+            $message['body'][] = $params['message'];
+            break;
+
+        case 'mail_to_Pauthor_sending_jv':
+            $message['from'] = \Drupal::config('system.site')->get('mail');
+            $message['subject'] = t('@title', array('@title' => $params['subject']), $options);
+            $message['body'][] = $params['message'];
+            break;
+
+    }
+}
+
+/**
+ * Implements HOOK_views_pre_render().
+ */
+function custom_hooks_views_pre_render(ViewExecutable $view){
+    if ($view->id() == 'proposal_project' && $view->current_display == 'page_2') {
+        //$view['display_handler']['handlers']
+        //kint($view->field); exit;
+        /*foreach ($view->result as $value) {
+      $created = (int) $value->_entity->get('created')->value;
+      $changed = (int) $value->_entity->get('changed')->value;
+      //- If you want for example to set created time with changed - created.
+      $value->_entity->set('created', $changed - $created);
+    }*/
+    }
+    if ($view->id() == 'sub_department_user' && $view->current_display == 'page_1') {
+        //kint($view);exit;
+    }
+}
+
+/**
+ * Implements hook_views_pre_render().
+ */
+function custom_hooks_views_query_alter(ViewExecutable $view, QueryPluginBase $query) {
+    $viewDisplay = $view->getDisplay();
+    $viewDisplay = $viewDisplay->display['id'];
+
+    if($view->id() === 'test'){
+
+        if( in_array($viewDisplay, ['block_1', 'block_2', 'block_3', 'block_4'] )){
+            $uid = @$view->args[0];
+            //      if($viewDisplay!='block_1')
+            //      {
+            //        kint($uid);
+            //        kint($viewDisplay);
+            //        exit;
+            //      }
+            foreach($query->where['2']['conditions'] as &$cond)
+            {
+                if($cond['field'] == 'node__field_user.field_user_target_id')
+                {
+                    $cond['value'] = $uid;
+
+                }elseif($cond['field'] == 'node__field_jv_author.field_jv_author_target_id')
+                {
+                    $cond['value'] = $uid;
+                }
+            }
+        }
+    }
+
+    if($view->id() === 'sub_user_jv_requests'){
+
+        $uid = @$view->args[0];
+
+        if( in_array($viewDisplay, ['page_1'] )){
+            foreach($query->where['2']['conditions'] as &$cond)
+            {
+                if($cond['field'] == 'node__field_user.field_user_target_id')
+                {
+                    $cond['value'] = $uid;
+
+                }elseif($cond['field'] == 'node__field_jv_author.field_jv_author_target_id')
+                {
+                    $cond['value'] = $uid;
+                }
+            }
+        }
+    }
+
+    if($view->id() === 'company_signup'){
+        if($viewDisplay === 'page_1'){
+            $userIds = array();
+            $priIDs = Views::getView('company_signup');
+            $priIDs->setDisplay('block_2');
+            $priIDs->preExecute();
+            $priIDs->execute();
+            $priIDs = $priIDs->result;
+
+            $authIDs = Views::getView('company_signup');
+            $authIDs->setDisplay('block_3');
+            $authIDs->preExecute();
+            $authIDs->execute();
+            $authIDs = $authIDs->result;
+
+            foreach($priIDs as $row){
+                $userIds[] = $row->_entity->id();
+                /*$userIds[] = [
+          'id' => $row->_entity->id(),
+          'created' => $row->_entity->getCreatedTime(),
+        ];*/
+            }
+            foreach($authIDs as $row){
+                $userIds[] = $row->_entity->id();
+            }
+            if($query->where[0]['conditions'][0]['field'] == 'users_field_data.uid IN(:users_field_data_uid[])'){
+                $query->where[0]['conditions'][0]['value'][':users_field_data_uid[]'] = $userIds;
+            }
+        }elseif ($viewDisplay === 'block_1' || $viewDisplay === 'block_4') {
+            $route_name = \Drupal::routeMatch();
+            if($route_name->getRouteName() == 'entity.user.canonical'){
+                $user = Drupal::request()->attributes->get('user');
+                if($user->id != \Drupal::currentUser()->id()){
+                    if(strpos($query->where[0]['conditions'][0]['field'], 'users_field_data.uid = :users_field_data_uid') === 0){
+                        $firstKey = key($query->where[0]['conditions'][0]['value']);
+                        $query->where[0]['conditions'][0]['value'][$firstKey] = $user->id();
+                    }
+                }
+            }
+        }
+    }
+    if($view->id() === 'proposal_project' && $viewDisplay === 'page_2'){
+        if(\Drupal::currentUser()->isAuthenticated()){
+            unset($view->field['nothing']);
+        }else{
+            unset($view->field['view_node']);
+        }
+    }
+
+    if($view->id() === 'company_profile'){
+        $roles = \Drupal::currentUser()->getRoles();
+        if(in_array('government', $roles)){
+            if($viewDisplay === 'page_1'){
+                $removeFields = ['nothing_2', 'field_cpmpany_name', 'field_company_sector', 'field_country', 'field_address_address_line1', 'field_address_postal_code', 'field_address_locality', 'field_total_number_of_employees', 'field_company_phone_number', 'field_company_email_address', 'field_address_dependent_locality', 'field_attachment'];
+                foreach ($removeFields as $key => $value) {
+                    unset($view->field[$value]);
+                }
+            }elseif($viewDisplay === 'page_2'){
+                $removeFields = ['nothing_2', 'form_field_field_cpmpany_name', 'form_field_field_company_sector', 'form_field_field_country', 'form_field_field_total_number_of_employees', 'form_field_field_address', 'form_field_field_company_phone_number', 'form_field_field_company_fax_number', 'form_field_field_company_email_address', 'form_field_field_company_website', 'form_field_field_attachment'];
+                foreach ($removeFields as $value) {
+                    unset($view->field[$value]);
+                }
+            }
+        }
+    }
+
+
+
+
+    if($view->id() === 'proposal_project' && $viewDisplay === 'page_1'){
+        $roles = \Drupal::currentUser()->getRoles();
+        if(in_array('government', $roles)) unset($view->field['field_type_of_collaboration_soug']);
+        $count = $view->query->query()->countQuery()->execute()->fetchField();
+        if($count == 0){
+            setBlock('xyz', 'createproposal');
+        }else{
+            setBlock('/proposal-project', 'createproposal');
+        }
+    }
+
+    if($view->id() === 'sub_department_user' && $viewDisplay === 'page_1'){
+        $user = \Drupal::currentUser();
+        $roles = $user->getRoles();
+        if(in_array('government', $roles)){
+            $account = \Drupal\user\Entity\User::load($user->id());
+            //$account = $user->getAccount();
+            $department = '';
+            $subDepttData = [];
+            if(!empty($account->get('field_department')->getValue()) && empty($account->get('field_sub_department')->getValue())){
+                $department = $account->get('field_department')->getValue()[0]['target_id'];
+                $subDeptt = Views::getView('sub_departments');
+                $subDeptt->setDisplay('block_1');
+                $subDeptt->setArguments([$department]);
+                $subDeptt->preExecute();
+                $subDeptt->execute();
+                $subDeptt = $subDeptt->result;
+                foreach($subDeptt as $row){
+                    $subDepttData[] = $row->tid;
+                }
+                $query->where[0]['conditions'][2]['value'][':user__field_department_field_department_target_id'] = $department;
+                $query->where[0]['conditions'][0]['value'][':user__field_sub_department_field_sub_department_target_id[]'] = $subDepttData;
+            }else{
+                $query->where[0]['conditions'][2]['value'][':user__field_department_field_department_target_id'] = '0000';
+                $query->where[0]['conditions'][0]['value'][':user__field_sub_department_field_sub_department_target_id[]'] = ['0000'];
+            }
+        }
+    }
+    //$session = \Drupal::request()->getSession();
+    //$login_id = $session->get('login-id');
+    $user = \Drupal::currentUser()->id();
+    if ($view->id() == 'jv_status' && $view->getDisplay()->display['id'] == 'page_1') {
+        //    kint($query->where);
+        //    exit;
+        if(isset($query->where[0]['conditions'][0]['value'][':node__field_send_receive_field_send_receive_value'])){
+            $val = $query->where[0]['conditions'][0]['value'][':node__field_send_receive_field_send_receive_value'];
+        }else{
+            $val = 'Any';
+        }
+        if($val == 'Sent'){
+            if(isset($query->where[2]['conditions'])){
+                unset($query->where[2]['conditions'][0]);
+                $query->where[2]['conditions'][1]['value'] = $user;
+            }
+        }elseif($val == 'Received'){
+            if(isset($query->where[2]['conditions'])){
+                $query->where[2]['conditions'][0]['value'] = $user;
+                unset($query->where[2]['conditions'][1]);
+            }
+        }else{
+            if(isset($query->where[2]['conditions'])){
+                $query->where[2]['conditions'][0]['value'] = $user;
+                $query->where[2]['conditions'][1]['value'] = $user;
+            }
+        }
+    }elseif ($view->id() == 'ejv_counter' && $view->getDisplay()->display['id'] == 'block_1') {
+        if(isset($query->where[2]['conditions'][0]['value'])){
+            $query->where[2]['conditions'][0]['value'] = $user;
+            $query->where[2]['conditions'][1]['value'] = $user;
+
+        }
+    }elseif ($view->id() == 'ejv_counter' && $view->getDisplay()->display['id'] == 'block_2') {
+        if(isset($query->where[2]['conditions'][0]['value'])){
+            $query->where[2]['conditions'][0]['value'] = $user;
+            $query->where[2]['conditions'][1]['value'] = $user;
+
+        }
+
+    }elseif ($view->id() == 'ejv_counter' && $view->getDisplay()->display['id'] == 'block_3') {
+        if(isset($query->where[2]['conditions'][0]['value'])){
+            $query->where[2]['conditions'][0]['value'] = $user;
+            $query->where[2]['conditions'][1]['value'] = $user;
+            //
+        }
+
+    }elseif ($view->id() == 'ejv_counter' && $view->getDisplay()->display['id'] == 'block_4') {
+        if(isset($query->where[2]['conditions'][0]['value'])){
+            $query->where[2]['conditions'][0]['value'] = $user;
+            $query->where[2]['conditions'][1]['value'] = $user;
+        }
+
+    }elseif ($view->id() == 'ejv_counter' && $view->getDisplay()->display['id'] == 'block_6') {
+        if(isset($query->where[2]['conditions'][0]['value'])){
+            $query->where[2]['conditions'][0]['value'] = $user;
+            $query->where[2]['conditions'][1]['value'] = $user;
+
+        }
+    }
+}
+
+
+
+function custom_hooks_taxonomy_term_update($term){
+    $bundle = $term->bundle();
+    $tid = $term->id();
+    if($bundle == "departments")
+    {
+        $status = $term->status->getValue()[0]['value'];
+        //    $users = \Drupal::entityTypeManager()->getStorage('user')->loadByProperties(['field_department'=>$tid]);
+        $users = \Drupal::entityTypeManager()->getStorage('user')->loadByProperties(['field_department'=>$tid]);
+        foreach($users as $user)
+        {
+            if(count($user->field_sub_department->getValue()) == 0)
+            {
+                if($status)
+                {
+                    $user->activate();
+                }else{
+                    $user->block();
+                }
+                $user->save();
+            }
+        }
+
+    }elseif($bundle == 'sub_department'){
+        $status = $term->status->getValue()[0]['value'];
+        $users = \Drupal::entityTypeManager()->getStorage('user')->loadByProperties(['field_sub_department'=>$tid]);
+        foreach($users as $user){
+            //    'field_sub_department'
+            if($status){
+                $user->activate();
+            }else{
+                $user->block();
+            }
+            $user->save();
+        }
+    }
+}
+
+/*JV STATUS CHANGE CODE*/
+function custom_hooks_node_presave(\Drupal\Core\Entity\EntityInterface $node) {
+
+    if($node->getType() == "discussion"){
+        $node_old = $node->original;
+        if($node_old){
+            //kint($node); '_none' 'Negotiate' 'Successful' 'Canceled'
+            $nid = $node->id();
+
+            if(!count($node->field_user->referencedEntities()) || !count($node->field_jv_author->referencedEntities()))
+            {
+                return;
+            }
+
+            $jv_author_email = $node->field_jv_author->referencedEntities()[0]->getEmail();
+
+
+            $jv_author_name = $node->field_jv_author->referencedEntities()[0]->getUsername();
+            $pauthor_email = $node->field_user->referencedEntities()[0]->getEmail();
+            $pauthor_name = $node->field_user->referencedEntities()[0]->getUsername();
+            $proposal_title = $node->field_proposal->referencedEntities()[0]->getTitle();
+
+            //use value if value is directly saved
+            //use target_id if it is entity refrence
+            $check_changes = ['field_jv_author_status'=>'value', 'field_p_author_status'=>'value'];
+
+            $changed = [];
+            $changed_msg = "Below fields are changed<br/>";
+            foreach($check_changes as $field_name => $value_index){
+                if(!isset($node->$field_name->getValue()[0][$value_index])){
+                    continue;
+                }
+                $fieldValue = $node->$field_name->getValue()[0][$value_index];
+                //$fieldValueOld = $node_old->$field_name->getValue()[0][$value_index];
+                $fieldValueOld = (isset($node_old->$field_name->getValue()[0])) ? $node_old->$field_name->getValue()[0][$value_index] : '' ;
+                if($fieldValue != $fieldValueOld){
+                    $changed[$field_name] = $fieldValue;
+                    $changed_msg .= "<b>$field_name</b>: $fieldValue <br/>";
+                }
+            }
+            $conds = [
+                '_none_none'=>'N/A',
+                'NegotiateNegotiate'=>'Negotiate',
+                'SuccessfulSuccessful'=>'Successful',
+                'CanceledCanceled'=>'Canceled',
+                '_noneSuccessful'=>'N/A',
+                '_noneNegotiate'=>'N/A',
+                'NegotiateSuccessful'=>'Negotiate',
+                //'SuccessfulNegotiate'=>'Negotiate',
+                'CanceledNegotiate'=>'Canceled',
+                'CanceledSuccessful'=>'Canceled',
+                '_noneCanceled'=>'N/A',
+                '_noneSuccessful'=>'N/A',
+                '_noneCanceled'=>'N/A',
+            ];
+
+            //'_none' 'Negotiate' 'Successful' 'Canceled'
+            $a = isset($node->field_p_author_status->getValue()[0]['value'])?$node->field_p_author_status->getValue()[0]['value']:"_none";
+            $b = isset($node->field_jv_author_status->getValue()[0]['value'])?$node->field_jv_author_status->getValue()[0]['value']:"_none";
+            $key = $a.$b;
+            $final_value = isset($conds[$key])?$conds[$key]:"_none";
+            if(isset($conds[$a.$b])) $final_value = $conds[$a.$b];
+            elseif(isset($conds[$b.$a])) $final_value = $conds[$b.$a];
+            //echo $proposal_title;exit;
+            $node->set('field_proposal_status', $final_value);
+            if($final_value == 'Canceled'){
+                $node->set('field_date', date("Y-m-d"));
+            }
+            $changed_msg .= "<b>Status</b> $final_value";
+            if($changed){
+                //send email here
+                $currentUserEmail = \Drupal::currentUser()->getEmail();
+                if($currentUserEmail == $jv_author_email){
+                    //It means you are JV Author;
+                    //Send email to pAuthor
+                    $p_author_arr = array('pauthor_name' => $pauthor_name, 'pauthor_email' => $pauthor_email, 'proposal_title' => $proposal_title, 'status' => reset($changed)/*$final_value*/);
+                    sendEmail($p_author_arr, 'send_mail_p_author');
+                    //drupal_set_message(t('Email has been sent to P Author.'), 'status', FALSE);
+                }elseif ($currentUserEmail == $pauthor_email) {
+                    //It means you are P Author.;
+                    //Send email to JV Author
+                    $jv_author_arr = array('jvauthor_name' => $jv_author_name, 'jv_author_email' => $jv_author_email, 'proposal_title' => $proposal_title, 'status' => reset($changed)/*$final_value*/);
+                    sendEmail($jv_author_arr, 'send_mail_jv_author');
+                    //drupal_set_message(t('Email has been sent to JV Author.'), 'status', FALSE);
+                }
+            }
+        }
+        //$node->save();
+        //kint($field_jv_author_status);
+        // 'field_jv_author_status' , 'field_p_author_status', 'field_jv_author''field_user''field_proposal_status'
+        //exit;
+    }
+}
+
+/**
+ * Implements hook_cron().
+ * MUA
+ */
+function custom_hooks_cron(){
+    $view = Views::getView('discussion_7_days_nodes');
+    $render_array = $view->buildRenderable('rest_export_1');
+    $rendered = \Drupal::service('renderer')->renderRoot($render_array);
+    $json_string = $rendered->jsonSerialize();
+    $promo_detail = json_decode($rendered);
+    if(!empty($promo_detail)){
+        foreach($promo_detail as $nid){
+            $node = node_load($nid->nid);
+            $node->delete();
+            \Drupal::logger('custom_hooks')->notice('node delted '.$nid->nid.' by Custom Hooks module.');
+        }
+    }
+}
+
+/**/
+function custom_hooks_user_register_submit_handler($form, &$form_state) {
+    $user = \Drupal::currentUser()->getRoles();
+    if(in_array('site_ad', $user)){
+        $form_state->setRedirect("view.site_admin_users.page_1");
+    }else{
+        $form_state->setRedirect('entity.node.canonical', ['node' => 411]);
+    }
+}
+
+function custom_hooks_form_user_register_form_alter(&$form, &$form_state, $form_id) {
+    $form['actions']['submit']['#validate'][] = 'restrictedEmailDomainCheck';
+    $form['actions']['submit']['#validate'][] = '::validateForm';
+    $form['actions']['submit']['#submit'][] = 'custom_hooks_user_register_submit_handler';
+}
+
+function restrictedEmailDomainCheck(&$form, &$form_state)
+{
+
+    $ceoEmailIds = \Drupal::entityQuery('user')
+        ->condition('field_company_email_', $form_state->getValue('field_company_email_')[0]['value'])
+        ->range(0, 1)
+        ->execute();
+
+    if($ceoEmailIds)
+    {
+        $form_state->setError($form['field_company_email_']['widget'], "Ceo email already exists.");
+    }
+
+
+    $companyEmailIds = \Drupal::entityQuery('user')
+        ->condition('field_company_email_address', $form_state->getValue('field_company_email_address')[0]['value'])
+        ->range(0, 1)
+        ->execute();
+
+
+    if($companyEmailIds)
+    {
+        $form_state->setError($form['field_company_email_address']['widget'], "Company email already exists.");
+    }
+
+
+
+    $pattern = get_emaildomainrestrcition_list_regex();
+
+    $mailFieldArray = [];
+
+    //mail field
+    $mailFieldArray[] = [
+        'fieldName' => "Email address",
+        'field' => &$form['account']['mail'],
+        'value' => $form_state->getValue('mail')
+    ];
+
+    $mailFieldArray[] = [
+        'fieldName' => "CEO Email",
+        'field' => &$form['field_company_email_']['widget'],
+        'value' => $form_state->getValue('field_company_email_')[0]['value']
+    ];
+
+    $mailFieldArray[] = [
+        'fieldName' => "Company Email Address",
+        'field' => &$form['field_company_email_address']['widget'],
+        'value' => $form_state->getValue('field_company_email_address')[0]['value']
+    ];
+
+    foreach($mailFieldArray as $condition){
+        $exist = preg_match($pattern, $condition['value'], $match);
+        //        kint($exist);
+        if($exist)
+        {
+            $form_state->setError($condition['field'], "You Enter mail in '".$condition['fieldName']."' with domain ".$match[0]." these domains are not allowed ".join(', ', get_emaildomainrestrcition_list()));
+        }
+    }
+
+
+}
+
+function custom_hook_ajax_render_alter(array &$data) {
+
+    // Inject any new status messages into the content area.
+    $status_messages = ['#type' => 'status_messages',];
+    $command = new \Drupal\Core\Ajax\PrependCommand('.alert.alert-success', \Drupal::service('renderer')
+                                                    ->renderRoot($status_messages));
+    $data[] = $command
+        ->render();
+}
+
+
+function setBlock($url, $blockname){
+    $block = \Drupal\block\Entity\Block::load($blockname);
+    $visibility = $block->getVisibility();
+    if (isset($visibility['request_path']['pages'])) {
+        $visibility['request_path']['pages'] = $url;
+        $block->setVisibilityConfig('request_path', $visibility['request_path']);
+        $block->save();
+    }
+}

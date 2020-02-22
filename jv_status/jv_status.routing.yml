@@ -1,0 +1,32 @@
+
+jv_status.send_cancel_controller_sendRequest:
+  path: '/sendRequest/{node}'
+  defaults:
+    _controller: '\Drupal\jv_status\Controller\SendCancelController::sendRequest'
+    _title: 'Send Request'
+  requirements:
+    _permission: 'access content'
+  options:
+    parameters:
+      node:
+        type: entity:node
+jv_status.send_cancel_controller_CancelRequest:
+  path: '/CancelRequest/{node}'
+  defaults:
+    _controller: '\Drupal\jv_status\Controller\SendCancelController::CancelRequest'
+    _title: 'Cancel Request'
+  requirements:
+    _permission: 'access content'
+  options:
+    parameters:
+      node:
+        type: entity:node
+
+jv_status.delete_controller_DeleteRequest:
+  path: '/delete/jv_status'
+  defaults:
+    _controller: '\Drupal\jv_status\Controller\DeleteController::delete'
+    _title: 'Cancel Request'
+  methods: [GET]
+  requirements:
+    _permission: 'access content'

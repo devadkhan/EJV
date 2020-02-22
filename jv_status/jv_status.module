@@ -1,0 +1,35 @@
+<?php
+
+/**
+ * @file
+ * Contains jv_status.module.
+ */
+
+use Drupal\Core\Routing\RouteMatchInterface;
+
+/**
+ * Implements hook_help().
+ */
+function jv_status_help($route_name, RouteMatchInterface $route_match) {
+  switch ($route_name) {
+    // Main module help for the jv_status module.
+    case 'help.page.jv_status':
+      $output = '';
+      $output .= '<h3>' . t('About') . '</h3>';
+      $output .= '<p>' . t('Module for controling jv status') . '</p>';
+      return $output;
+
+    default:
+  }
+}
+
+/**
+ * Implements hook_theme().
+ */
+function jv_status_theme() {
+  return [
+    'jv_status' => [
+      'render element' => 'children',
+    ],
+  ];
+}
